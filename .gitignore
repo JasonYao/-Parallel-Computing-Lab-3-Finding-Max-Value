@@ -11,3 +11,9 @@ maxgpu.dSYM/
 maxseq
 maxseq.dSYM/
 samples/
+
+# IDE ignores
+.idea/
+
+# OSX ignores
+.DS_Store
