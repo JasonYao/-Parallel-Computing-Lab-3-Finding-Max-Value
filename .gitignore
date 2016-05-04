@@ -4,3 +4,10 @@
 *.ptx
 *.cubin
 *.fatbin
+
+# CUDA ignores
+maxgpu
+maxgpu.dSYM/
+maxseq
+maxseq.dSYM/
+samples/

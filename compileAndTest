@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+
+# Parallel version of the compile and test script
+
+set -e
+
+x=10
+
+currentDirectory=$(pwd)
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    currentDirectory="/Users/Jason/Documents/NewYorkUniversity/Junior-Year-Spring-2016/ParallelProgramming/lab3"
+fi
+
+# Sets up CUDA if on CIMS
+if [[ "$(uname -s)" == "Linux" ]]; then
+	module load mpi/mpich-x86_64
+	if [[ ! -d "$currentDirectory/samples" ]]; then
+		cp -r /usr/local/cuda/samples $currentDirectory/samples
+		cd $currentDirectory/samples
+		make
+		cd bin/x86_64/linux/release
+		./deviceQuery
+		./bandwidthTest
+	fi
+else
+	if [[ ! -d "$currentDirectory/samples" ]]; then
+		cp -r /Developer/NVIDIA/CUDA-7.5/samples $currentDirectory/samples
+		cd $currentDirectory/samples
+		make
+		cd bin/x86_64/darwin/release
+		./deviceQuery
+		./bandwidthTest
+	fi
+fi
+cd $currentDirectory
+
+# Compiles
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	gcc -g -Wall -o maxseq maxseq.c
+	nvcc -g -o maxgpu maxgpu.cu
+	# gcc -g -Wall -o maxseq maxseq.c
+else
+	nvcc -g -Wall -o maxseq maxseq.c
+fi
+
+# Executes and generates the output file
+./maxseq $x
+./maxgpu $x
+
+# Diffs the parallel version
+#diff $nValue.txt testing/answer/$nValue.txt
