@@ -157,6 +157,7 @@ long getmaxcu(long num[], long size, long ans)
     cudaError_t error;
     struct cudaDeviceProp deviceProp;
     error = cudaGetDevice(&devID);
+    cudaSetDevice(1);
 
     // Error handling
     if (error != cudaSuccess)
