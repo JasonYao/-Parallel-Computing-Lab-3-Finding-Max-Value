@@ -31,7 +31,7 @@ nvcc -g -m64 \
 ```
 
 ## The graph
-![Runtime of graph](img/graph.png)
+![Runtime of graph](img/runtime.png)
 
 ## Programme runtime behaviour explaination
 As we can see per the runtime graph, there was a marked increase in the time required to run
