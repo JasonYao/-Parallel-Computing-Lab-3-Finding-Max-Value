@@ -6,14 +6,13 @@
 #include <math.h>
 
 /* By Jason Yao */
-bool IS_DEBUG_MODE = true;
+bool IS_DEBUG_MODE = false;
 bool IS_SEQUENTIAL_MODE = false;
 
 /**
  * Global definitions
  */
-#define THREADS_PER_BLOCK 1024      // Number of threads per block
-#define THREADS_PER_SM 2048         // Number of threads per SM
+#define THREADS_PER_BLOCK 1024      // Number of threads per block, hardcoded since all have compute capability of 3.x+
 
 /**
  * Function declarations
@@ -21,8 +20,6 @@ bool IS_SEQUENTIAL_MODE = false;
 void printDeviceInfo();
 long getmax(long *, long);
 long getmaxcu(long*, long, long);
-long getmaxcu2(long*, long, long);
-int BLOCKSIZE;
 
 /* Setup functions */
 int main(int argc, char *argv[])
@@ -63,10 +60,8 @@ int main(int argc, char *argv[])
 
     long ans = getmax(numbers, size);
 
-    printf("The maximum number in the array is (Sequential): %ld\n", ans);
-
     if (!IS_SEQUENTIAL_MODE)
-        printf("The maximum number in the array is (Parallel): %ld\n", getmaxcu2(numbers, size, ans));
+        printf("The maximum number in the array is: %ld\n", getmaxcu(numbers, size, ans));
 
     free(numbers);
     return EXIT_SUCCESS;
@@ -108,52 +103,6 @@ long getmax(long num[], long size)
     return( max );
 } // End of the sequential getmax function
 
-
-
-
-
-//// Kernel that executes on the CUDA device
-//__global__ void findMaxCUDA(long* num_device, long size, long* max_device, dim3 threads)
-//{
-//    __shared__ long max_shared;
-//    extern __shared__ long num_shared[];
-//    int idx = threadIdx.x + blockIdx.x * blockDim.x;        // Global thread ID
-//    int tid = threadIdx.x;                                  // Local thread ID
-//
-//    num_shared[tid] = INT32_MIN;
-//
-//    for (long current_global_id = idx; current_global_id < size;)
-//    {
-//        if (num_shared[tid] > num_device[current_global_id])
-//            num_shared[tid] = num_shared[tid];
-//        else
-//            num_shared[tid] = num_device[current_global_id];
-//        current_global_id += gridDim.x*blockDim.x;
-//    }
-//    __syncthreads();
-//
-//    for (int i = blockDim.x/2; i > 0; i >>=1)
-//    {
-//        if ((tid < i) && (idx < size))
-//        {
-//            if (num_shared[tid] > num_shared[tid + i])
-//                num_shared[tid] = num_shared[tid];
-//            else
-//                num_shared[tid] = num_shared[tid + i];
-//        }
-//        __syncthreads();
-//    }
-//
-//    if (tid == 0)
-//    {
-//        max_shared = num_shared[0];
-//        for (int i = 0; i < 32; ++i)
-//            if (max_shared < num_shared[i])
-//                max_shared = num_shared[i];
-//        *max_device = max_shared;
-//    }
-//} // End of the findmax CUDA kernal
-
 /**
  * Unoptimised kernal to find the maximum value of an array of longs
  */
@@ -167,12 +116,41 @@ __global__ void findMaxCUDAUnoptimised(long* num_device, long size)
     }
 }
 
-__global__ void findMaxCUDAOptimised(long* num_device, long size)
+/**
+ * Optimised kernal to find the maximum value of an array of longs
+ */
+__global__ void findMaxCUDAOptimised(long* num_device, long size, long* max_of_each_block_device)
 {
+    extern __shared__ long num_shared[];
+    int thread_id = threadIdx.x;                        // Local thread id inside block
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;    // Global unique thread id in grid
 
+    // Grabs from global memory to shared memory if available
+    num_shared[thread_id] = 0;
+    if (idx < size)
+        num_shared[thread_id] = num_device[idx];
+    __syncthreads();
+
+    max_of_each_block_device[thread_id] = num_shared[idx];
+
+    // Iterates through the shared memory version of the num[] to find the largest
+    for (unsigned int s = blockDim.x; s > 1; s >>= 1)
+    {
+        int halfway_point = s >> 1;
+        if (threadIdx.x < halfway_point)
+        {
+            long temp = max_of_each_block_device[threadIdx.x + halfway_point];
+            if (temp > max_of_each_block_device[threadIdx.x])
+                max_of_each_block_device[threadIdx.x] = temp;
+        }
+        __syncthreads();
+    }
+
+    if (thread_id == 0)
+        printf("\nMax element on GPU=%ld\n", max_of_each_block_device[0]);
 }
 
-long getmaxcu2(long num[], long size, long ans)
+long getmaxcu(long num[], long size, long ans)
 {
     // GPU setup
     int devID = 0;
@@ -204,6 +182,7 @@ long getmaxcu2(long num[], long size, long ans)
 
     // Calculates the dimensions
     long number_of_elements_per_thread = (long) ceil(size / THREADS_PER_BLOCK);
+    long max_value = ans;
     long threads_per_block;
     if (size > THREADS_PER_BLOCK)
         threads_per_block = THREADS_PER_BLOCK;
@@ -216,48 +195,20 @@ long getmaxcu2(long num[], long size, long ans)
     cudaMalloc((void**) &num_device, sizeof(long) * size);
     cudaMemcpy((void*) num_device, (void*) num, sizeof(long) * size, cudaMemcpyHostToDevice);
 
-
-
-
-//
-//
-//    cudaDeviceSynchronize();
-
+    long* max_of_each_block_device;
+    cudaMalloc((void**) &max_of_each_block_device, sizeof(long) * blocks_per_grid);
 
     // Kernal invocation
-    //findMaxCUDA<<<1, 1>>>(num_device, num_size, max_device); // TODO remove after
-//    findMaxCUDA<<< grid, threads, BLOCKSIZE>>>(num_device, size, max_device, threads); // Working with old version
-//    findMaxCUDAUnoptimised<<< grid, threads, BLOCKSIZE>>>(num_device, unoptimisedSize, max_device);
+    cudaDeviceSynchronize();
+    findMaxCUDAUnoptimised<<<1, 1>>>(num_device, size);                                 // Unoptimised call
+//    findMaxCUDAOptimised<<<1, 1, 0>>>(num_device, size, max_of_each_block_device);    // Optimised call
 
-
-
-    findMaxCUDAUnoptimised<<<1, 1, 0>>>(num_device, size);
-//    findMaxCUDAOptimised<<<number_of_elements_per_thread, number_of_threads>>>(num_device, size);
-//    findMaxCUDAUnoptimised<<< 1, 1, 0>>>(num_device, num_device_size, max_device);
-
-
-    // Transfers the updated num array back to the host
-    long* new_num = (long *)malloc(size * sizeof(long));
-    cudaMemcpy(new_num, num_device, sizeof(long) * size, cudaMemcpyDeviceToHost);
-
-    // Iterates through each block to find the max
-    long max_value = new_num[0];
-//    int i;
-//    for (i = 0; i < size; i += threads_per_block)
-//    {
-//        if (max_value < new_num[i])
-//            max_value = num[i];
-//    }
-
-//    // Transfer max from device to host
-//    long best_ans;
-//    cudaMemcpy(&best_ans, max_device, sizeof(long), cudaMemcpyDeviceToHost);
-//    cudaMemcpy((void *) num_host, (const void *) num_device, sizeof(long) * size, cudaMemcpyDeviceToHost);
-    //max_host = ans;
+    // Transfers the output array to the host
+    long* new_num = (long *)malloc(sizeof(long) * blocks_per_grid);
+    cudaMemcpy(new_num, max_of_each_block_device, sizeof(long) * blocks_per_grid, cudaMemcpyDeviceToHost);
 
     // Frees all device memory
     cudaFree(num_device);
-
 
     // cudaDeviceReset causes the driver to clean up all state. While
     // not mandatory in normal operation, it is good practice.  It is also
@@ -268,245 +219,3 @@ long getmaxcu2(long num[], long size, long ans)
 
     return max_value;
 } // End of the getmaxcu function
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-///*
-//   input: pointer to an array of long int
-//          number of elements in the array
-//   output: the maximum number of the array
-//*/
-//long getmaxcu(long num[], long size, long ans)
-//{
-//    // GPU setup
-//    int devID = 0;
-//    cudaError_t error;
-//    struct cudaDeviceProp deviceProp;
-//    error = cudaGetDevice(&devID);
-//
-//    // Error handling
-//    if (error != cudaSuccess)
-//        printf("cudaGetDevice returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
-//
-//    error = cudaGetDeviceProperties(&deviceProp, devID);
-//
-//    if (deviceProp.computeMode == cudaComputeModeProhibited)
-//    {
-//        fprintf(stderr, "Error: device is running in <Compute Mode Prohibited>, no threads can use ::cudaSetDevice().\n");
-//        exit(EXIT_SUCCESS);
-//    }
-//
-//    if (error != cudaSuccess)
-//        printf("cudaGetDeviceProperties returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
-//    else
-//    {
-//        if (IS_DEBUG_MODE)
-//            printf("GPU Device %d: \"%s\" with compute capability %d.%d\n\n", devID, deviceProp.name, deviceProp.major, deviceProp.minor);
-//    }
-//
-//    // Host memory for num[] and size have been allocated and initialised in main()
-//    long max_host = num[0];
-//    long* num_host = (long *)malloc(size * sizeof(long));
-//
-//    // Allocate device memory
-//    long max_device;
-//    long* num_device;
-//    unsigned long num_size = sizeof(long) * size;
-//    cudaMalloc((void **) &max_device, sizeof(long));
-//    cudaMalloc((void **) &num_device, num_size);
-//
-//    // Transfers num[] to device memory
-//    cudaMemcpy(num_device, num, num_size, cudaMemcpyHostToDevice);
-//
-//    // Sets up execution parameters
-//    // Use a larger block size for Fermi and above
-//    BLOCKSIZE = (deviceProp.major < 2) ? 16 : 32;
-//
-//    dim3 dimsA(5*2*BLOCKSIZE, 5*2*BLOCKSIZE, 1);
-//    dim3 dimsB(5*4*BLOCKSIZE, 5*2*BLOCKSIZE, 1);
-//
-//    // Setup execution parameters
-//    dim3 threads(BLOCKSIZE, BLOCKSIZE);
-//    dim3 grid(dimsB.x / threads.x, dimsA.y / threads.y);
-//
-//    cudaDeviceSynchronize();
-//
-//    // Kernal invocation
-//    //findMaxCUDA<<<1, 1>>>(num_device, num_size, max_device); // TODO remove after
-////    findMaxCUDA<<< grid, threads, BLOCKSIZE>>>(num_device, size, max_device, threads); // Working with old version
-////    findMaxCUDAUnoptimised<<< grid, threads, BLOCKSIZE>>>(num_device, unoptimisedSize, max_device);
-//    findMaxCUDAUnoptimised<<< 1, 1, 0>>>(num_device, size, max_device);
-//
-////    if (block_size == 16)
-////    {
-////        findMaxCUDA<16><<< grid, threads >>>(num_device, num_size, max_device);
-////    }
-////    else
-////    {
-////        findMaxCUDA<32><<< grid, threads >>>(num_device, num_size, max_device);
-////    }
-//
-//    // Transfer max from device to host
-//    long best_ans;
-//    cudaMemcpy((void *) &best_ans, (const void *) max_device, sizeof(long), cudaMemcpyDeviceToHost);
-////    cudaMemcpy((void *) num_host, (const void *) num_device, sizeof(long) * size, cudaMemcpyDeviceToHost);
-//    //max_host = ans;
-//    printf("best_ans: %ld\n", best_ans);
-//    max_host = best_ans;
-//
-//    // Frees all device memory
-//    cudaFree((void *) max_device);
-//    cudaFree(num_device);
-//
-//    // cudaDeviceReset causes the driver to clean up all state. While
-//    // not mandatory in normal operation, it is good practice.  It is also
-//    // needed to ensure correct operation when the application is being
-//    // profiled. Calling cudaDeviceReset causes all profile data to be
-//    // flushed before the application exits
-//    cudaDeviceReset();
-//
-//    return max_host;
-//} // End of the getmaxcu function
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/////////////////////////////////////////////////// DEAD CODE
-
-
-//    findMaxCUDA<<< grid, threads>>>(num_device, size); // Working with new version
-//long* newSize = (long *) size;
-//maxNum<<<grid, threads, BLOCKSIZE>>>(num_device, newSize, max_device); // not working
-
-
-
-
-///*
-//   input: pointer to an array of long int
-//          number of elements in the array
-//   output: the maximum number of the array
-//*/
-//__global__ static void maxNum(long* num, long* size, long* result)
-//{
-//    long tmp = 0;
-//    long i;
-//    for (i = 0; i < *size; i++)
-//        if (num[i] > tmp)
-//            tmp = num[i];
-//
-//    *result = tmp;
-//}
-
-//__global__ void findMaxCUDA(long num[], long size) {
-//    long curMax;
-//    int index = threadIdx.x + (blockDim.x * blockIdx.x);
-//    long count = size;
-//
-//    while(count > 1)
-//    {
-//        long halfSize = count / 2;
-//        if (index < halfSize){
-//            curMax = num[ index + halfSize ];
-//            if (curMax > num[ index ]) {
-//                num[index] = curMax;
-//            }
-//        }
-//        __syncthreads();
-//        count = count / 2;
-//    }
-//    //cudaGetDeviceProperties()
-//}
-
-//
-//
-
-
-
-// START OF DIMENSION CALCULATION DEAD CODE
-//
-//
-//    // Sets up execution parameters
-//    // Use a larger block size for Fermi and above
-//    BLOCKSIZE = (deviceProp.major < 2) ? 16 : 32;
-//
-//    dim3 dimsA(5*2*BLOCKSIZE, 5*2*BLOCKSIZE, 1);
-//    dim3 dimsB(5*4*BLOCKSIZE, 5*2*BLOCKSIZE, 1);
-//
-//    // Setup execution parameters
-//    dim3 threads(BLOCKSIZE, BLOCKSIZE);
-//    dim3 grid(dimsB.x / threads.x, dimsA.y / threads.y);
-//
-// END OF DIMENSION CALCULATION DEAD CODE
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

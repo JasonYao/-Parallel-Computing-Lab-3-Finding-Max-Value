@@ -4,7 +4,7 @@
 
 set -e
 
-x=10
+x=1000000
 
 currentDirectory=$(pwd)
 
@@ -36,7 +36,18 @@ fi
 cd $currentDirectory
 
 # Compiles
-nvcc -g -o $currentDirectory/maxgpu $currentDirectory/maxgpu.cu
+#gcc -g -o $currentDirectory/maxseq $currentDirectory/maxseq.c
+#nvcc -g -o $currentDirectory/maxgpu $currentDirectory/maxgpu.cu
+nvcc -g -m64 \
+--generate-code arch=compute_30,code=sm_30 \
+--generate-code arch=compute_35,code=sm_35 \
+--generate-code arch=compute_37,code=sm_37 \
+--generate-code arch=compute_50,code=sm_50 \
+--generate-code arch=compute_52,code=sm_52 \
+--generate-code arch=compute_52,code=compute_52 \
+-o maxgpu maxgpu.cu
+
 
 # Executes and generates the output file
 ./maxgpu $x
+#./maxseq $x
